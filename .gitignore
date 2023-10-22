@@ -1,0 +1,11 @@
+/assets
+/coverage
+/dist
+/models
+/node_modules
+/notebooks
+/temp
+*.code-workspace
+*.ipynb
+*data.json
+*.txt

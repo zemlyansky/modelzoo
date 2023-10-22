@@ -1,0 +1,6 @@
+[submodule "py/mingpt"]
+	path = py/mingpt
+	url = https://github.com/karpathy/minGPT.git
+[submodule "py/clip"]
+	path = py/clip
+	url = https://github.com/openai/CLIP.git
