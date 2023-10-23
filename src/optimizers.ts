@@ -2,7 +2,7 @@ import type {
   NamedTensor,
   NamedVariableMap,
 } from "@tensorflow/tfjs-core/dist/tensor_types";
-import * as tf from "@tensorflow/tfjs-node";
+import * as tf from "@tensorflow/tfjs";
 
 const ENGINE = tf.engine();
 

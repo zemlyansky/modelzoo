@@ -4,5 +4,6 @@
 /node_modules
 /notebooks
 /temp
+/py
 *.code-workspace
 *.ipynb
