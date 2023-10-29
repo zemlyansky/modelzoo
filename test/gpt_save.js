@@ -2,7 +2,7 @@
 // https://stackoverflow.com/questions/57452981/tensorflowjs-save-model-throws-error-unsupported-typedarray-subtype-float32arr
 const fs = require('fs')
 const tf = require('@tensorflow/tfjs-node')
-const { 
+const {
     CausalSelfAttention,
     CausalSelfAttentionMixed,
 } = require("./src/model")
@@ -56,7 +56,7 @@ weights1.forEach((w1, i) => {
     console.log('mse between w1 and w2', w1.name, tf.losses.meanSquaredError(w1, w2).arraySync())
     const mse = tf.losses.meanSquaredError(w1, w2).arraySync()
     mses_1_2.push(mse)
-})  
+})
 console.log('mse between m1 and m2', tf.mean(mses_1_2).arraySync())
 
 // Save and load
@@ -72,7 +72,7 @@ const path = process.cwd() + '/temp/test_model'
     await model2.save(`file://${path}_2`)
     const model1Loaded = await tf.loadLayersModel(`file://${path}_1/model.json`)
     const model2Loaded = await tf.loadLayersModel(`file://${path}_2/model.json`)
-    
+
     // Get weights
     const weights1Loaded = model1Loaded.getWeights()
     const weights2Loaded = model2Loaded.getWeights()
@@ -90,7 +90,7 @@ const path = process.cwd() + '/temp/test_model'
         mses.push(mse)
     })
     console.log('mse between saved and loaded', tf.mean(mses).arraySync())
-    
+
     for (let i = 0; i < 10; i++) {
         console.log(model1Loaded.predict(input).arraySync()[0][0][0])
     }

@@ -1,6 +1,6 @@
 import * as tf from '@tensorflow/tfjs';
 
-interface BaseConfig {
+export interface BaseConfig {
   name?: string
 }
 
@@ -67,6 +67,47 @@ export class Range extends tf.layers.Layer {
   static className: string = "Range";
 }
 tf.serialization.registerClass(Range)
+
+export function eot(config: BaseConfig) { return new EOT(config) }
+export class EOT extends tf.layers.Layer {
+  // Layers that get x of size: [batch, length, nEmbd] and tokens of size [batch, length]
+  // And returns: x[torch.arange(x.shape[0]), tokens.argmax(dim=-1)]
+  constructor(config: BaseConfig) {
+    super(config);
+  }
+
+  computeOutputShape([xShape, tokensShape]) {
+    return [xShape[0], xShape[2]]; // [batch, nEmbd]
+  }
+
+  call(inputs, kwargs) {
+    return tf.tidy(() => {
+      let [x, tokens] = inputs;
+
+      if (Array.isArray(x)) {
+        x = x[0];
+      }
+      if (Array.isArray(tokens)) {
+        tokens = tokens[0];
+      }
+
+      this.invokeCallHook([x, tokens], kwargs);
+
+      // Get the index of the token with the maximum ID for each sequence in the batch
+      const maxTokenIndices = tf.argMax(tokens, -1);
+      x = logLayer({ name: "eot/pre_gather" }).apply(x) as tf.SymbolicTensor;
+      x = tf.gather(x, maxTokenIndices, 1, 1);
+      x = logLayer({ name: "eot/post_gather" }).apply(x) as tf.SymbolicTensor;
+      // x = x.squeeze([1]); // Not needed if passing that extra `1` to gather
+      // x = logLayer({ name: "eot/post_squeeze" }).apply(x) as tf.SymbolicTensor;
+      return x;
+    });
+  }
+
+  static className = "EOT";
+}
+
+tf.serialization.registerClass(EOT);
 
 /**
  * Positional embedding layer
@@ -286,6 +327,7 @@ export interface MultiheadAttentionConfig {
   debug?: boolean;
   isCausal?: boolean;
   bias?: boolean;
+  joint?: boolean; // If true, use a single dense layer for q, k, v projections
 }
 export function multiheadAttention (config: MultiheadAttentionConfig) {
   return new MultiheadAttention(config)
@@ -298,8 +340,8 @@ export class MultiheadAttention extends tf.layers.Layer {
   private bias: boolean | undefined;
   private isCausal: boolean | undefined;
   private mask: tf.Tensor | null | undefined;
-  private cAttnKernel!: tf.LayerVariable;
-  private cAttnBias!: tf.LayerVariable;
+  private cAttnKernels!: tf.LayerVariable[];
+  private cAttnBiases!: tf.LayerVariable[];
   private cProjKernel!: tf.LayerVariable;
   private cProjBias!: tf.LayerVariable;
 
@@ -310,39 +352,59 @@ export class MultiheadAttention extends tf.layers.Layer {
       bias: true,
       debug: false,
       isCausal: false,
+      joint: true,
     }, config);
 
     // Config
-    this.nEmbd = config.nEmbd;
-    this.nHead = config.nHead;
-    this.dropout = config.dropout;
-    this.bias = config.bias;
-    this.isCausal = config.isCausal;
+    this.nEmbd = this.config.nEmbd;
+    this.nHead = this.config.nHead;
+    this.dropout = this.config.dropout;
+    this.bias = this.config.bias;
+    this.isCausal = this.config.isCausal;
 
-    if (config.isCausal) {
+    if (this.config.isCausal) {
       this.mask = tf.linalg.bandPart(
-        tf.ones([config.blockSize, config.blockSize]),
+        tf.ones([this.config.blockSize, this.config.blockSize]),
         -1,
         0,
       );
-    } else if (config.mask) {
-      this.mask = config.mask;
+    } else if (this.config.mask) {
+      this.mask = this.config.mask;
     }
   }
 
   build(_inputShape: tf.Shape): void {
-    this.cAttnKernel = this.addWeight(
-      "c_attn/kernel",
-      [this.nEmbd, 3 * this.nEmbd],
-      "float32",
-      tf.initializers.glorotNormal({}),
-    );
-    this.cAttnBias = this.addWeight(
-      "c_attn/bias",
-      [3 * this.nEmbd],
-      "float32",
-      tf.initializers.zeros(),
-    );
+    if (this.config.joint) {
+      this.cAttnKernels = [this.addWeight(
+        "c_attn/kernel",
+        [this.nEmbd, 3 * this.nEmbd],
+        "float32",
+        tf.initializers.glorotNormal({}),
+      )];
+      this.cAttnBiases = [this.addWeight(
+        "c_attn/bias",
+        [3 * this.nEmbd],
+        "float32",
+        tf.initializers.zeros(),
+      )];
+    } else {
+      this.cAttnKernels = [];
+      this.cAttnBiases = [];
+      ['q', 'k', 'v'].forEach((name) => {
+        this.cAttnKernels.push(this.addWeight(
+          `c_attn_${name}/kernel`,
+          [this.nEmbd, this.nEmbd],
+          "float32",
+          tf.initializers.glorotNormal({}),
+        ));
+        this.cAttnBiases.push(this.addWeight(
+          `c_attn_${name}/bias`,
+          [this.nEmbd],
+          "float32",
+          tf.initializers.zeros(),
+        ));
+      });
+    }
     this.cProjKernel = this.addWeight(
       "c_proj/kernel",
       [this.nEmbd, this.nEmbd],
@@ -406,14 +468,12 @@ export class MultiheadAttention extends tf.layers.Layer {
 
   /**
    * Pure attention function
-   * @param input - input tensors. Can be [x] or [q, k, v]
-   * @param cAttnKenel - input projection tensors. Can be [w] or [w_q, w_k, w_v]
    * */
   static attention(
     input: tf.Tensor[],
     nHead: number,
-    cAttnKenel: tf.LayerVariable[],
-    cAttnBias: tf.LayerVariable | null,
+    cAttnKernels: tf.LayerVariable[],
+    cAttnBiases: tf.LayerVariable[] | null,
     cProjKernel: tf.LayerVariable,
     cProjBias: tf.LayerVariable | null,
     dropout: number = 0,
@@ -422,29 +482,29 @@ export class MultiheadAttention extends tf.layers.Layer {
     debug?: boolean,
   ): tf.Tensor {
     let q: tf.Tensor, k: tf.Tensor, v: tf.Tensor;
-    if ((input.length === 1) && (cAttnKenel.length === 1)) {
+    if ((input.length === 1) && (cAttnKernels.length === 1)) {
       [q, k, v] = tf.split(MultiheadAttention.dense(
         input[0],
-        cAttnKenel[0],
-        cAttnBias
+        cAttnKernels[0],
+        cAttnBiases ? cAttnBiases[0] : null,
       ), 3, -1)
-    } else if ((input.length === 3) && (cAttnKenel.length === 3)) {
+    } else if ((input.length === 3) && (cAttnKernels.length === 3)) {
       [q, k, v] = input.map((x, i) => MultiheadAttention.dense(
         x,
-        cAttnKenel[i],
-        cAttnBias
+        cAttnKernels[i],
+        cAttnBiases ? cAttnBiases[i] : null,
       ));
-    } else if ((input.length === 1) && (cAttnKenel.length === 3)) {
-      [q, k, v] = cAttnKenel.map((w, i) => MultiheadAttention.dense(
+    } else if ((input.length === 1) && (cAttnKernels.length === 3)) {
+      [q, k, v] = cAttnKernels.map((w, i) => MultiheadAttention.dense(
         input[0],
         w,
-        cAttnBias,
+        cAttnBiases ? cAttnBiases[i] : null,
       ));
-    } else if ((input.length === 3) && (cAttnKenel.length === 1)) {
+    } else if ((input.length === 3) && (cAttnKernels.length === 1)) {
       [q, k, v] = input.map((x, i) => MultiheadAttention.dense(
         x,
-        cAttnKenel[0],
-        cAttnBias,
+        cAttnKernels[0],
+        cAttnBiases ? cAttnBiases[0] : null,
       ));
     } else {
       throw new Error("Invalid input");
@@ -516,8 +576,8 @@ export class MultiheadAttention extends tf.layers.Layer {
       return MultiheadAttention.attention(
         input,
         this.nHead,
-        [this.cAttnKernel],
-        this.bias ? this.cAttnBias : null,
+        this.cAttnKernels,
+        this.bias ? this.cAttnBiases : null,
         this.cProjKernel,
         this.bias ? this.cProjBias : null,
         this.dropout,
@@ -528,116 +588,9 @@ export class MultiheadAttention extends tf.layers.Layer {
     });
   }
 
-  call_old(input: tf.Tensor | tf.Tensor[], kwargs: any): tf.Tensor {
-    return tf.tidy(() => {
-      // let k, q, v;
-      if (Array.isArray(input)) {
-        input = input[0];
-      }
-      this.invokeCallHook(input, kwargs);
-
-      // Direct application of matMul to x and kernel throws:
-      // > Error in gradient for op BatchMatMul.
-      // > The gradient of input 'b' has shape '16,48,48',
-      // > which does not match the shape of the input '48,48'
-      // Two solutions worked:
-      // 1. Use tf.layers.dense but reassign kernel and bias
-      // 2. Use tf.matMul but expandDims and tile kernel (current)
-      // Another option, of course, is to separate attention logic
-      // from trainable weights completely and use tf.layers.dense
-      // inside a model definition. I was not able to define fully
-      // function regular dense layers inside a custom layer.
-      // Something related to how weights are loaded with this.kernel
-      // and duplicating names
-
-      const cAttn = MultiheadAttention.dense(input, this.cAttnKernel, this.bias ? this.cAttnBias : null);
-
-      // Make prder of qkv split to follow minGPT
-      let [q, k, v] = tf.split(cAttn, 3, -1);
-      const [B, T, C] = k.shape;
-
-      if (this.config.debug) {
-        new LogLayer({ name: "att_x" }).call(input);
-        new LogLayer({ name: "att_c_attn" }).call(cAttn);
-        new LogLayer({ name: "att_q_before" }).call(q);
-        new LogLayer({ name: "att_k_before" }).call(k);
-        new LogLayer({ name: "att_v_before" }).call(v);
-      }
-
-      const splitHeads = (x: tf.Tensor) =>
-        tf.transpose(
-          tf.reshape(x, [B, T, this.nHead, C / this.nHead]),
-          [0, 2, 1, 3],
-        );
-
-      q = splitHeads(q);
-      k = splitHeads(k);
-      v = splitHeads(v);
-
-      if (this.config.debug) {
-        new LogLayer({ name: "att_q_after" }).call(q);
-        new LogLayer({ name: "att_k_after" }).call(k);
-        new LogLayer({ name: "att_v_after" }).call(v);
-      }
-
-      // causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-      let att = tf.mul(
-        tf.matMul(q, k, false, true),
-        tf.div(1, tf.sqrt(tf.cast(k.shape[k.shape.length - 1], "float32"))),
-      );
-
-      if (this.mask) {
-        const mask = this.mask.slice([0, 0], [T, T]);
-        att = tf.add(att, tf.mul(tf.sub(1, mask), -1e9));
-      }
-
-      att = tf.softmax(att, -1);
-      att = kwargs["training"] ? tf.dropout(att, this.dropout) : att;
-      if (this.config.debug) {
-        new LogLayer({ name: "> att_softmax" }).call(att);
-      }
-
-      let y = tf.matMul(att, v);
-      if (this.config.debug) {
-        new LogLayer({ name: "att_yv" }).call(y);
-      }
-
-      y = tf.transpose(y, [0, 2, 1, 3]);
-      y = tf.reshape(y, [B, T, C]);
-      y = MultiheadAttention.dense(y, this.cProjKernel, this.bias ? this.cProjBias : null)
-      y = kwargs["training"] ? tf.dropout(y, this.dropout) : y;
-      if (this.config.debug) {
-        new LogLayer({ name: "att_y" }).call(y);
-      }
-
-      return y;
-    });
-  }
-
   static className: string = "MultiheadAttention";
 }
 tf.serialization.registerClass(MultiheadAttention)
-
-/**
- *  Causal self attention layer
- *
- *  Based on MultiheadAttention + causal mask
- *  Used in GPT2
- */
-// export function causalAttention (config: MultiheadAttentionConfig) {
-//   return new CausalAttention(config)
-// }
-// export class CausalAttention extends tf.layers.Layer {
-//   constructor (config: MultiheadAttentionConfig) {
-//     // Causal mask
-//     this.mask = tf.linalg.bandPart(
-//       tf.ones([config.blockSize, config.blockSize]),
-//       -1,
-//       0,
-//     );
-//   }
-// }
-
 
 /**
  *  MLP layer
@@ -694,12 +647,6 @@ export function MLP(conf: MLPConfig): tf.LayersModel {
 /**
  *  Block layer
  */
-// {
-  //   debug?: boolean;
-  //   name?: string;
-  //   activation?: string;
-  // }
-
 export interface BlockConfig extends MLPConfig, MultiheadAttentionConfig {}
 export const block = Block;
 export function Block(conf: BlockConfig): tf.LayersModel {
@@ -754,15 +701,18 @@ class Transformer(nn.Module):
  *  Transformer layer
  */
 export interface TransformerConfig extends BlockConfig {
-  layers: number;
+  nLayer: number;
 }
 export const transformer = Transformer;
 export function Transformer(config: TransformerConfig): tf.LayersModel {
   const inputs = tf.input({ shape: [config.blockSize, config.nEmbd] });
+  config = Object.assign({
+    name: 'transformer',
+  }, config);
   let x: tf.SymbolicTensor = inputs;
-  for (let i = 0; i < config.layers; i++) {
+  for (let i = 0; i < config.nLayer; i++) {
     x = Block(Object.assign({}, config, {
-      'name': 'h_' + i
+      'name': config.name + '/h_' + i
     })).apply(x) as tf.SymbolicTensor;
   }
   return tf.model({

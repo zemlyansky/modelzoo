@@ -16,5 +16,6 @@ export {
     models,
     layers,
     optimizers,
+    tokenizers,
     utils
 }
