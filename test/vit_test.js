@@ -4,7 +4,7 @@ const { transform } = require('../dist/cjs/models/clip.js')
 const { setWeights } = require('../dist/cjs/utils')
 const tests = require('./clip_data.json')
 
-test('VisionTransformer', () => {
+test('VisionTransformer', async () => {
   const config = {
     'name': 'vit',
     'inputResolution': tests['vit_config']['input_resolution'],
@@ -15,7 +15,7 @@ test('VisionTransformer', () => {
     'outputDim': tests['vit_config']['output_dim'],
   }
   const model = VisionTransformer(config)
-  setWeights(
+  await setWeights(
     model,
     tests['vit_weights'],
     [

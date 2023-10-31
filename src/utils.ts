@@ -1,6 +1,4 @@
 import * as tf from "@tensorflow/tfjs";
-// import h5wasm from "h5wasm";
-// export const h5 = h5wasm;
 
 export function convertMinGPTConfig(config) {
   const mapping = {
@@ -48,24 +46,6 @@ export function convertMinGPTWeights(weights) {
   }
   return newWeights;
 }
-
-/*
-export function loadH5(f, load, name='', res={}) {
-  const ks = f.keys()
-  ks.forEach(k => {
-      const branch = f.get(k)
-      if (branch.keys) {
-        loadH5(branch, convert, name + '/' + k, res)
-      } else {
-        console.log('Reading:', name + '/' + k, branch.shape)
-        res[name + '/' + k] = convert
-          ? tf.tensor(branch.to_array())
-          : branch.to_array()
-      }
-  })
-  return res
-}
-*/
 
 /**
  * Recursively go over H5 tree and collect all keys ~ Object.keys(f)
@@ -157,17 +137,19 @@ export interface StatsWeights {
   name: string,
   shape: number[]
 }
-export function setWeights(
+export async function setWeights(
   model: tf.LayersModel,
   weights: any,
   mapName: [string, string][],
   mapTranspose: [string, number[]][],
   type: string ='object',
-  cb: (stats: StatsWeights) => void = (stats) => { }
+  cb: (stats: StatsWeights) => Promise<void> = async () => {}
 ) {
   const weightsOld = model.getWeights() as unknown as tf.Variable[]; // TODO: report issue?
   const weightsTotal = weightsOld.length
-  weightsOld.forEach((wOld, i) => {
+  // weightsOld.forEach((wOld, i) => {
+  for (let i = 0; i < weightsTotal; i++) {
+    let wOld = weightsOld[i]
     let wOldName = wOld.name;
     let stats: StatsWeights = {
       i: i,
@@ -175,8 +157,8 @@ export function setWeights(
       name: wOldName,
       shape: wOld.shape
     }
-    cb(stats)
+    await cb(stats)
     let wNew: tf.Tensor = getWeight(weights, wOldName, mapName, mapTranspose, type)
     wOld.assign(wNew)
-  })
+  }
 }

@@ -3,7 +3,7 @@ const { Block } = require('../dist/cjs/layers.js')
 const { setWeights } = require('../dist/cjs/utils')
 const tests = require('./clip_data.json')
 
-test('ResidualAttentionBlock', () => {
+test('ResidualAttentionBlock', async () => {
   const config = {
     'name': 'block',
     'blockSize': tests['attn_input_shape'][1],
@@ -14,7 +14,7 @@ test('ResidualAttentionBlock', () => {
     'activation': 'quickgelu'
   }
   const block = Block(config)
-  setWeights(
+  await setWeights(
     block,
     tests['attn_weights'],
     [

@@ -150,11 +150,23 @@ export function CLIPTextModel (config: CLIPTextConfig): tf.LayersModel {
  * the similarity between them scaling the logits.
  * @returns
  */
-export function similarity(config: BaseConfig) { return new Similarity(config) }
+export interface SimilarityConfig extends BaseConfig {
+  nEmbd: number;
+}
+
+export function similarity(config: SimilarityConfig): tf.LayersModel {
+  // Create a custom LayersModel to store separately
+  config = Object.assign({ name: 'similarity' }, config);
+  const visionInput = tf.input({ shape: [config.nEmbd] }) as tf.SymbolicTensor;
+  const textInput = tf.input({ shape: [config.nEmbd] }) as tf.SymbolicTensor;
+  const [logitsPerImage, logitsPerText] = new Similarity(config).apply([visionInput, textInput]) as tf.SymbolicTensor[];
+  return tf.model({ inputs: [visionInput, textInput], outputs: [logitsPerImage, logitsPerText] });
+}
+
 export class Similarity extends tf.layers.Layer {
   private logitScale!: tf.LayerVariable;
 
-  constructor(config: BaseConfig) {
+  constructor(config: SimilarityConfig) {
     super(config);
   }
 
@@ -197,14 +209,13 @@ export function CLIPModel (
   config: CLIPConfig,
   textModel: tf.LayersModel,
   visionModel: tf.LayersModel,
-  similarity: tf.layers.Layer
+  similarity: tf.LayersModel
 ): tf.LayersModel {
   const textInput = tf.input({ shape: [config.blockSize] });
   const visionInput = tf.input({ shape: [config.inputResolution, config.inputResolution, 3] });
 
   const textOutput = textModel.apply(textInput) as tf.SymbolicTensor;
   const visionOutput = visionModel.apply(visionInput) as tf.SymbolicTensor;
-
   const [logitsPerImage, logitsPerText] = similarity.apply([visionOutput, textOutput]) as tf.SymbolicTensor[];
 
   return tf.model({ inputs: [textInput, visionInput], outputs: [logitsPerImage, logitsPerText] });
@@ -226,14 +237,19 @@ export class CLIP {
   config: CLIPConfig;
   visual: tf.LayersModel;
   text: tf.LayersModel;
-  similarity: tf.layers.Layer;
+  similarity: tf.LayersModel;
   clip: tf.LayersModel;
 
-  constructor(config: CLIPConfig) {
+  constructor(
+    config: CLIPConfig,
+    visual: tf.LayersModel | null = null,
+    text: tf.LayersModel | null = null,
+    sim: tf.LayersModel | null = null
+  ) {
     if (config.visionWidth % 64 !== 0) throw new Error('Vision width must be divisible by 64');
     this.config = config;
 
-    this.visual = visionTransformer({
+    this.visual = visual ? visual : visionTransformer({
       name: 'vit',
       inputResolution: config.inputResolution,
       patchSize: config.patchSize,
@@ -245,7 +261,7 @@ export class CLIP {
       joint: false,
     })
 
-    this.text = CLIPTextModel({
+    this.text = text ? text : CLIPTextModel({
       name: 'text',
       vocabSize: config.vocabSize,
       nEmbd: config.nEmbd,
@@ -260,8 +276,9 @@ export class CLIP {
       activation: 'quickgelu'
     })
 
-    this.similarity = similarity({
-      name: 'similarity'
+    this.similarity = sim ? sim : similarity({
+      name: 'similarity',
+      nEmbd: config.nEmbd
     });
 
     this.clip = CLIPModel(config, this.text, this.visual, this.similarity);
@@ -316,11 +333,11 @@ export class CLIP {
   static transposes: { [key: string]: [string, number[]][] } = {}
 
   // weights are dict of name -> tf.Tensor or h5 group
-  static buildModel(
+  static async buildModel(
     weights: any,
     source: string = 'clip-vit-base-h5',
-    cb: (stats: StatsWeights) => void = (stats) => { }
-  ): CLIP {
+    cb: (stats: StatsWeights) => Promise<void> = async () => {}
+  ): Promise<CLIP> {
     console.log('Building model from', source)
     const weightMap = source in CLIP.maps ? CLIP.maps[source] : [];
     const weightTranspose = source in CLIP.transposes ? CLIP.transposes[source] : [];
@@ -352,7 +369,7 @@ export class CLIP {
     // setWeights(model.visual, weights, weightMap, weightTranspose, source.includes('h5') ? 'h5' : 'object', cb)
     // setWeights(model.text, weights, weightMap, weightTranspose, source.includes('h5') ? 'h5' : 'object', cb)
     // setWeights(model.similarity, weights, weightMap, weightTranspose, source.includes('h5') ? 'h5' : 'object', cb)
-    setWeights(model.clip, weights, weightMap, weightTranspose, source.includes('h5') ? 'h5' : 'object', cb)
+    await setWeights(model.clip, weights, weightMap, weightTranspose, source.includes('h5') ? 'h5' : 'object', cb)
     return model
   }
 }
