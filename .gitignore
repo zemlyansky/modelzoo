@@ -9,3 +9,5 @@
 *.ipynb
 *data.json
 *.txt
+.vscode
+package-lock.json

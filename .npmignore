@@ -7,3 +7,5 @@
 /py
 *.code-workspace
 *.ipynb
+.vscode
+package-lock.json
