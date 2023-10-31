@@ -200,15 +200,20 @@ export class ClassEmbedding extends tf.layers.Layer {
 }
 tf.serialization.registerClass(ClassEmbedding)
 
-export function slice(begin: number[], size: number[]) { return new Slice(begin, size) }
+export interface SliceConfig extends BaseConfig {
+  begin: number[];
+  size: number[];
+}
+export function slice(config: SliceConfig) { return new Slice(config) }
 export class Slice extends tf.layers.Layer {
   private begin: number[];
   private size: number[];
 
-  constructor(begin: number[], size: number[]) {
-    super({});
-    this.begin = begin;
-    this.size = size;
+  constructor(config: SliceConfig) {
+    config = Object.assign({name: 'slice'}, config);
+    super(config);
+    this.begin = config.begin;
+    this.size = config.size;
   }
 
   computeOutputShape(inputShape: tf.Shape): tf.Shape {
@@ -232,6 +237,12 @@ export class Slice extends tf.layers.Layer {
       const size = [-1, ...this.size];
       return tf.slice(input, begin, size);
     });
+  }
+
+  getConfig(): tf.serialization.ConfigDict {
+    const config = super.getConfig();
+    Object.assign(config, {begin: this.begin, size: this.size});
+    return config;
   }
 
   static className = 'Slice';

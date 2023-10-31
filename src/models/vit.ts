@@ -78,7 +78,7 @@ export function VisionTransformer(config: VisionTransformerConfig): tf.LayersMod
     .apply(x) as tf.SymbolicTensor;
 
   // First token -> [batch, 1, nEmbd]
-  x = slice([0, 0], [1, -1])
+  x = slice({begin: [0, 0], size: [1, -1]})
     .apply(x) as tf.SymbolicTensor;
   if (config.debug) x = logLayer({name: config.name + '/post_slice'})
     .apply(x) as tf.SymbolicTensor;
